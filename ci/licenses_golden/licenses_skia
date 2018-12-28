@@ -1,4 +1,4 @@
-Signature: 55297538a081711afded8cde204ea99f
+Signature: cd879f8096d4b7daaa9230b4bbbcb653
 
 UNUSED LICENSES:
 
@@ -1351,6 +1351,7 @@ FILE: ../../../third_party/skia/include/effects/SkTrimPathEffect.h
 FILE: ../../../third_party/skia/include/gpu/GrBackendDrawableInfo.h
 FILE: ../../../third_party/skia/include/gpu/GrDriverBugWorkarounds.h
 FILE: ../../../third_party/skia/include/gpu/vk/GrVkMemoryAllocator.h
+FILE: ../../../third_party/skia/include/gpu/vk/GrVkVulkan.h
 FILE: ../../../third_party/skia/include/ports/SkFontMgr_fuchsia.h
 FILE: ../../../third_party/skia/include/private/GrCCClipPath.h
 FILE: ../../../third_party/skia/include/private/GrCCPerOpListPaths.h
@@ -1626,7 +1627,6 @@ FILE: ../../../third_party/skia/src/gpu/vk/GrVkPipelineLayout.h
 FILE: ../../../third_party/skia/src/gpu/vk/GrVkSamplerYcbcrConversion.cpp
 FILE: ../../../third_party/skia/src/gpu/vk/GrVkSamplerYcbcrConversion.h
 FILE: ../../../third_party/skia/src/gpu/vk/GrVkTypesPriv.cpp
-FILE: ../../../third_party/skia/src/gpu/vk/GrVkVulkan.h
 FILE: ../../../third_party/skia/src/image/SkImage_GpuBase.cpp
 FILE: ../../../third_party/skia/src/image/SkImage_GpuBase.h
 FILE: ../../../third_party/skia/src/image/SkImage_GpuYUVA.cpp
