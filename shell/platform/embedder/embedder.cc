@@ -248,6 +248,44 @@ struct _FlutterPlatformMessageResponseHandle {
   fml::RefPtr<blink::PlatformMessage> message;
 };
 
+void PopulateSnapshotMappingCallbacks(const FlutterProjectArgs* args,
+                                      blink::Settings& settings) {
+  // There are no ownership concerns here as all mappings are owned by the
+  // embedder and not the engine.
+  auto make_mapping_callback = [](const uint8_t* mapping, size_t size) {
+    return [mapping, size]() {
+      return std::make_unique<fml::NonOwnedMapping>(mapping, size);
+    };
+  };
+
+  if (blink::DartVM::IsRunningPrecompiledCode()) {
+    if (SAFE_ACCESS(args, vm_snapshot_data_size, 0) != 0 &&
+        SAFE_ACCESS(args, vm_snapshot_data, nullptr) != nullptr) {
+      settings.vm_snapshot_data = make_mapping_callback(
+          args->vm_snapshot_data, args->vm_snapshot_data_size);
+    }
+
+    if (SAFE_ACCESS(args, vm_snapshot_instructions_size, 0) != 0 &&
+        SAFE_ACCESS(args, vm_snapshot_instructions, nullptr) != nullptr) {
+      settings.vm_snapshot_instr = make_mapping_callback(
+          args->vm_snapshot_instructions, args->vm_snapshot_instructions_size);
+    }
+
+    if (SAFE_ACCESS(args, isolate_snapshot_data_size, 0) != 0 &&
+        SAFE_ACCESS(args, isolate_snapshot_data, nullptr) != nullptr) {
+      settings.isolate_snapshot_data = make_mapping_callback(
+          args->isolate_snapshot_data, args->isolate_snapshot_data_size);
+    }
+
+    if (SAFE_ACCESS(args, isolate_snapshot_instructions_size, 0) != 0 &&
+        SAFE_ACCESS(args, isolate_snapshot_instructions, nullptr) != nullptr) {
+      settings.isolate_snapshot_instr =
+          make_mapping_callback(args->isolate_snapshot_instructions,
+                                args->isolate_snapshot_instructions_size);
+    }
+  }
+}
+
 FlutterResult FlutterEngineRun(size_t version,
                                const FlutterRendererConfig* config,
                                const FlutterProjectArgs* args,
@@ -270,6 +308,16 @@ FlutterResult FlutterEngineRun(size_t version,
     return kInvalidArguments;
   }
 
+  if (SAFE_ACCESS(args, main_path__unused__, nullptr) != nullptr) {
+    FML_LOG(WARNING)
+        << "FlutterProjectArgs.main_path is deprecated and should be set null.";
+  }
+
+  if (SAFE_ACCESS(args, packages_path__unused__, nullptr) != nullptr) {
+    FML_LOG(WARNING) << "FlutterProjectArgs.packages_path is deprecated and "
+                        "should be set null.";
+  }
+
   if (!IsRendererValid(config)) {
     return kInvalidArguments;
   }
@@ -288,6 +336,9 @@ FlutterResult FlutterEngineRun(size_t version,
   }
 
   blink::Settings settings = shell::SettingsFromCommandLine(command_line);
+
+  PopulateSnapshotMappingCallbacks(args, settings);
+
   settings.icu_data_path = icu_data_path;
   settings.assets_path = args->assets_path;
 
@@ -356,13 +407,65 @@ FlutterResult FlutterEngineRun(size_t version,
         return std::make_unique<shell::Rasterizer>(shell.GetTaskRunners());
       };
 
+  // TODO(chinmaygarde): This is the wrong spot for this. It belongs in the
+  // platform view jump table.
+  shell::EmbedderExternalTextureGL::ExternalTextureCallback
+      external_texture_callback;
+  if (config->type == kOpenGL) {
+    const FlutterOpenGLRendererConfig* open_gl_config = &config->open_gl;
+    if (SAFE_ACCESS(open_gl_config, gl_external_texture_frame_callback,
+                    nullptr) != nullptr) {
+      external_texture_callback =
+          [ptr = open_gl_config->gl_external_texture_frame_callback, user_data](
+              int64_t texture_identifier, GrContext* context,
+              const SkISize& size) -> sk_sp<SkImage> {
+        FlutterOpenGLTexture texture = {};
+
+        if (!ptr(user_data, texture_identifier, size.width(), size.height(),
+                 &texture)) {
+          return nullptr;
+        }
+
+        GrGLTextureInfo gr_texture_info = {texture.target, texture.name,
+                                           texture.format};
+
+        GrBackendTexture gr_backend_texture(size.width(), size.height(),
+                                            GrMipMapped::kNo, gr_texture_info);
+        SkImage::TextureReleaseProc release_proc = texture.destruction_callback;
+        auto image = SkImage::MakeFromTexture(
+            context,                   // context
+            gr_backend_texture,        // texture handle
+            kTopLeft_GrSurfaceOrigin,  // origin
+            kRGBA_8888_SkColorType,    // color type
+            kPremul_SkAlphaType,       // alpha type
+            nullptr,                   // colorspace
+            release_proc,              // texture release proc
+            texture.user_data          // texture release context
+        );
+
+        if (!image) {
+          // In case Skia rejects the image, call the release proc so that
+          // embedders can perform collection of intermediates.
+          if (release_proc) {
+            release_proc(texture.user_data);
+          }
+          FML_LOG(ERROR) << "Could not create external texture.";
+          return nullptr;
+        }
+
+        return image;
+      };
+    }
+  }
+
   // Step 1: Create the engine.
   auto embedder_engine =
-      std::make_unique<shell::EmbedderEngine>(std::move(thread_host),   //
-                                              std::move(task_runners),  //
-                                              settings,                 //
-                                              on_create_platform_view,  //
-                                              on_create_rasterizer      //
+      std::make_unique<shell::EmbedderEngine>(std::move(thread_host),    //
+                                              std::move(task_runners),   //
+                                              settings,                  //
+                                              on_create_platform_view,   //
+                                              on_create_rasterizer,      //
+                                              external_texture_callback  //
       );
 
   if (!embedder_engine->IsValid()) {
@@ -522,5 +625,45 @@ FlutterResult FlutterEngineSendPlatformMessageResponse(
 
 FlutterResult __FlutterEngineFlushPendingTasksNow() {
   fml::MessageLoop::GetCurrent().RunExpiredTasksNow();
+  return kSuccess;
+}
+
+FlutterResult FlutterEngineRegisterExternalTexture(FlutterEngine engine,
+                                                   int64_t texture_identifier) {
+  if (engine == nullptr || texture_identifier == 0) {
+    return kInvalidArguments;
+  }
+  if (!reinterpret_cast<shell::EmbedderEngine*>(engine)->RegisterTexture(
+          texture_identifier)) {
+    return kInternalInconsistency;
+  }
+  return kSuccess;
+}
+
+FlutterResult FlutterEngineUnregisterExternalTexture(
+    FlutterEngine engine,
+    int64_t texture_identifier) {
+  if (engine == nullptr || texture_identifier == 0) {
+    return kInvalidArguments;
+  }
+
+  if (!reinterpret_cast<shell::EmbedderEngine*>(engine)->UnregisterTexture(
+          texture_identifier)) {
+    return kInternalInconsistency;
+  }
+
+  return kSuccess;
+}
+
+FlutterResult FlutterEngineMarkExternalTextureFrameAvailable(
+    FlutterEngine engine,
+    int64_t texture_identifier) {
+  if (engine == nullptr || texture_identifier == 0) {
+    return kInvalidArguments;
+  }
+  if (!reinterpret_cast<shell::EmbedderEngine*>(engine)
+           ->MarkTextureFrameAvailable(texture_identifier)) {
+    return kInternalInconsistency;
+  }
   return kSuccess;
 }
